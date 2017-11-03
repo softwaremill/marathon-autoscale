@@ -65,10 +65,11 @@ class Autoscaler():
             Sets dcos_headers to be used for authentication
         """
         # Get the certificate authority
-        if not os.path.isfile('dcos-ca.crt'):
-            response = requests.get(self.dcos_master + '/ca/dcos-ca.crt', verify=False)
-            with open("dcos-ca.crt", "wb") as crt_file:
-                crt_file.write(response.content)
+        if self.dcos_master.startswith('https'):
+            if not os.path.isfile('dcos-ca.crt'):
+                response = requests.get(self.dcos_master + '/ca/dcos-ca.crt', verify=False)
+                with open("dcos-ca.crt", "wb") as crt_file:
+                    crt_file.write(response.content)
 
         if ('AS_USERID' in os.environ.keys()) and ('AS_PASSWORD' in os.environ.keys()):
             auth_data = json.dumps({'uid' : os.environ.get('AS_USERID'),
@@ -99,23 +100,25 @@ class Autoscaler():
             'Authorization': 'token=' + result['token'],
             'Content-type': 'application/json'}
 
-    def dcos_rest(self, method, path, data=None):
+    def dcos_rest(self, method, path, data=None, endpoint=None):
         """Common querying procedure that handles 401 errors
         Args:
             path (str): URI path after the mesos master address
         Returns:
             JSON requests.response.content result of the query
         """
+        if not endpoint:
+            endpoint = self.dcos_master
         err_num = 0
         done = False
         while not done:
 
             if data is None:
-                response = requests.request(method, self.dcos_master + path,
+                response = requests.request(method, endpoint + path,
                                             headers=self.dcos_headers,
                                             verify=False)
             else:
-                response = requests.request(method, self.dcos_master + path,
+                response = requests.request(method, endpoint + path,
                                             headers=self.dcos_headers,
                                             data=data,
                                             verify=False)
@@ -127,10 +130,12 @@ class Autoscaler():
                     self.log.info("Authenticating")
                     self.authenticate()
                     done = False
+                elif response.status_code == 409:
+                    return
                 else:
                     response.raise_for_status()
 
-            content = response.content.strip()
+            content = response.content.strip().decode("utf-8")
             if not content:
                 content = "{}"
 
@@ -301,8 +306,8 @@ class Autoscaler():
         if self.app_instances != target_instances:
             data = {'instances': target_instances}
             json_data = json.dumps(data)
-            response = self.dcos_rest("put",
-                                      '/service/marathon/v2/apps/' + self.marathon_app,
+            response = self.dcos_rest("put", self.path_prefix +
+                                      '/v2/apps/' + self.marathon_app,
                                       data=json_data)
             #self.log.debug("scale_app returned status code %s", response.status_code)
             # self.app_instances will be updated next time get_app_details is called
@@ -313,7 +318,7 @@ class Autoscaler():
         Returns:
             Dictionary of task_id mapped to mesos slave_id
         """
-        response = self.dcos_rest("get", '/service/marathon/v2/apps/' +
+        response = self.dcos_rest("get", self.path_prefix + '/v2/apps/' +
                                   self.marathon_app)
         if response['app']['tasks'] == []:
             self.log.error('No task data in marathon for app %s', self.marathon_app)
@@ -328,7 +333,7 @@ class Autoscaler():
                 slave_id = i['slaveId']
                 self.log.debug("Task %s is running on host %s with slaveId %s"
                                , taskid, hostid, slave_id)
-                app_task_dict[str(taskid)] = str(slave_id)
+                app_task_dict[str(taskid)] = str(hostid)
 
             return app_task_dict
 
@@ -337,7 +342,7 @@ class Autoscaler():
         Returns:
             a list of all marathon apps
         """
-        response = self.dcos_rest("get", '/service/marathon/v2/apps')
+        response = self.dcos_rest("get", self.path_prefix + '/v2/apps')
         if response['apps'] == []:
             self.log.error("No Apps found on Marathon")
             sys.exit(1)
@@ -359,6 +364,9 @@ class Autoscaler():
                             help=('The DNS hostname or IP of your Marathon'
                                   ' Instance'),
                             **self.env_or_req('AS_DCOS_MASTER'))
+        parser.add_argument('--mesos-master',
+                            help=('The DNS hostname or IP of your Mesos'
+                                  ' Instance. '))
         parser.add_argument('--max_mem_percent',
                             help=('The Max percent of Mem Usage averaged '
                                   'across all Application Instances to trigger'
@@ -409,7 +417,11 @@ class Autoscaler():
                                   'checks (ie. 20)'),
                             **self.env_or_req('AS_INTERVAL'), type=int)
         parser.add_argument('-v', '--verbose', action="store_true",
-                            help='Display DEBUG messages')
+                            help='Display DEBUG messages'),
+        parser.add_argument('--endpoint-type',
+                             help=('Which endpoint to use '
+                                    '(dcos or marathon)'),
+                             **self.env_or_req('AS_ENDPOINT_TYPE'))
         try:
             args = parser.parse_args()
         except argparse.ArgumentError as arg_err:
@@ -431,6 +443,11 @@ class Autoscaler():
         self.trigger_number = float(args.trigger_number)
         self.interval = args.interval
         self.verbose = args.verbose or os.environ.get("AS_VERBOSE")
+        self.endpoint_type = args.endpoint_type
+        if self.endpoint_type == 'dcos':
+            self.path_prefix = '/service/marathon'
+        else:
+            self.path_prefix = ''
 
 
 
@@ -441,12 +458,17 @@ class Autoscaler():
         Args:
             task: marathon app task
             agent: agent on which the task is run
+            host: ip of agent
         Returns:
             statistics for the specific task
         """
 
-        response = self.dcos_rest("get", '/slave/' + agent +
-                                  '/monitor/statistics.json')
+        if self.endpoint_type == 'marathon':
+            response = self.dcos_rest("get", '/monitor/statistics.json',
+                                      endpoint='http://' + agent + ":5051")
+        else:
+            response = self.dcos_rest("get", '/slave/' + agent +
+                                      '/monitor/statistics.json')
         for i in response:
             executor_id = i['executor_id']
             if executor_id == task:

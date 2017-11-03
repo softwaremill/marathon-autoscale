@@ -1,6 +1,12 @@
 # marathon-autoscale
 Dockerized container autoscaler that can be run under Marathon management to dynamically scale a service running on DC/OS.
+This is a fork of https://github.com/mesosphere/marathon-autoscale but runs also on OSS version of DCOS.
 
+## Running on OSS version of DCOS with OAuth enabled
+When running on free version of DCOS thi script uses marathon and mesos api directly (in oposite to DCOS api endpoint). 
+Marathon and Mesos endpoints are not secured by default, so it's possible to use it without token even if OAuth is enabled.
+To use it add `--endpoint-type marathon` switch or use `AS_ENDPOINT_TYPE` env variable. If running on DCOS with OAuth disabled
+ or the commertial version of DCOS use `dcos` as endpoint type.
 
 ## Prerequisites
 A running DCOS cluster.
