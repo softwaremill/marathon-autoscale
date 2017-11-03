@@ -7,6 +7,7 @@ When running on free version of DCOS thi script uses marathon and mesos api dire
 Marathon and Mesos endpoints are not secured by default, so it's possible to use it without token even if OAuth is enabled.
 To use it add `--endpoint-type marathon` switch or use `AS_ENDPOINT_TYPE` env variable. If running on DCOS with OAuth disabled
  or the commertial version of DCOS use `dcos` as endpoint type.
+You also have to set dcos master to `http://marathon.mesos:8080`
 
 ## Prerequisites
 A running DCOS cluster.
